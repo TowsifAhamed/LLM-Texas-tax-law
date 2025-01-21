@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Texas Law Chat</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            height: 100vh;
+        }
+        .sidebar {
+            width: 25%;
+            background-color: #f1f1f1;
+            border-right: 1px solid #ddd;
+            padding: 10px;
+            box-sizing: border-box;
+            overflow-y: auto;
+        }
+        .sidebar h2 {
+            font-size: 1.2em;
+            margin-bottom: 10px;
+        }
+        .thread-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+        .thread-list li {
+            padding: 10px;
+            border: 1px solid #ddd;
+            margin-bottom: 5px;
+            cursor: pointer;
+            background-color: #fff;
+        }
+        .thread-list li:hover {
+            background-color: #eaeaea;
+        }
+        .chat-container {
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+        }
+        .chat-header {
+            padding: 10px;
+            border-bottom: 1px solid #ddd;
+            background-color: #f9f9f9;
+        }
+        .chat-content {
+            flex-grow: 1;
+            padding: 10px;
+            overflow-y: auto;
+            background-color: #fff;
+        }
+        .chat-content .message {
+            margin-bottom: 10px;
+        }
+        .chat-content .message.user {
+            text-align: right;
+        }
+        .chat-content .message .bubble {
+            display: inline-block;
+            padding: 10px;
+            border-radius: 10px;
+            max-width: 70%;
+        }
+        .chat-content .message.user .bubble {
+            background-color: #007bff;
+            color: #fff;
+        }
+        .chat-content .message.bot .bubble {
+            background-color: #f1f1f1;
+            color: #333;
+        }
+        .chat-input {
+            padding: 10px;
+            border-top: 1px solid #ddd;
+            display: flex;
+            gap: 10px;
+        }
+        .chat-input textarea {
+            flex-grow: 1;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            resize: none;
+        }
+        .chat-input button {
+            padding: 10px 20px;
+            background-color: #007bff;
+            color: #fff;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        .chat-input button:hover {
+            background-color: #0056b3;
+        }
+    </style>
+</head>
+<body>
+    <div class="sidebar">
+        <h2>Threads</h2>
+        <ul class="thread-list" id="threadList"></ul>
+        <input type="text" id="newThread" placeholder="New thread name">
+        <button onclick="createThread()">Create Thread</button>
+    </div>
+    <div class="chat-container">
+        <div class="chat-header">
+            <h3 id="currentThread">Select a thread</h3>
+        </div>
+        <div class="chat-content" id="chatContent"></div>
+        <div class="chat-input">
+            <textarea id="query" rows="2" placeholder="Enter your question"></textarea>
+            <button onclick="askQuestion()">Send</button>
+        </div>
+    </div>
+
+    <script>
+        let currentThread = null;
+
+        async function createThread() {
+            const threadName = document.getElementById('newThread').value;
+            if (!threadName) {
+                alert("Thread name cannot be empty");
+                return;
+            }
+            const response = await fetch('/create_thread', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ thread_id: threadName })
+            });
+            const result = await response.json();
+            if (result.error) {
+                alert(result.error);
+            } else {
+                alert(result.message);
+                loadThreads(); // Refresh thread list after creating a new thread
+            }
+        }
+
+        async function loadThreads() {
+            const threadList = document.getElementById('threadList');
+            threadList.innerHTML = ""; // Clear current list
+
+            // Fetch threads from the server
+            const response = await fetch('/show_all_threads'); // Add an endpoint to list all threads
+            const result = await response.json();
+
+            if (result.error) {
+                alert(result.error);
+            } else {
+                for (let threadId of result.threads) {
+                    const li = document.createElement('li');
+                    li.textContent = threadId;
+                    li.onclick = () => selectThread(threadId);
+                    threadList.appendChild(li);
+                }
+            }
+        }
+
+        async function selectThread(threadId) {
+            currentThread = threadId;
+            document.getElementById('currentThread').textContent = threadId;
+
+            const response = await fetch(`/show_conversations/${threadId}`);
+            const result = await response.json();
+
+            const chatContent = document.getElementById('chatContent');
+            chatContent.innerHTML = ""; // Clear existing messages
+
+            if (result.error) {
+                alert(result.error);
+            } else {
+                for (let message of result.chat_history) {
+                    const div = document.createElement('div');
+                    div.className = `message ${message.startsWith("Query:") ? "user" : "bot"}`;
+                    div.innerHTML = `<div class="bubble">${message.replace("Query: ", "").replace("Response: ", "")}</div>`;
+                    chatContent.appendChild(div);
+                }
+            }
+        }
+
+        async function askQuestion() {
+            if (!currentThread) {
+                alert("Select a thread first!");
+                return;
+            }
+            const query = document.getElementById('query').value;
+            if (!query) {
+                alert("Question cannot be empty");
+                return;
+            }
+            const response = await fetch('/ask_question', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ thread_id: currentThread, query })
+            });
+            const result = await response.json();
+
+            if (result.response) {
+                const chatContent = document.getElementById('chatContent');
+                const userMessage = document.createElement('div');
+                userMessage.className = 'message user';
+                userMessage.innerHTML = `<div class="bubble">${query}</div>`;
+                chatContent.appendChild(userMessage);
+
+                const botMessage = document.createElement('div');
+                botMessage.className = 'message bot';
+                botMessage.innerHTML = `<div class="bubble">${result.response}</div>`;
+                chatContent.appendChild(botMessage);
+
+                document.getElementById('query').value = "";
+                chatContent.scrollTop = chatContent.scrollHeight; // Scroll to the bottom
+            }
+        }
+
+        // Load threads on page load
+        window.onload = loadThreads;
+    </script>
+</body>
+</html>
