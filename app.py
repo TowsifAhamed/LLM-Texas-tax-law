@@ -1,15 +1,18 @@
+# Initialize Groq API
+groq_api_key = ""
+
 from flask import Flask, request, jsonify, render_template
 from sentence_transformers import SentenceTransformer
 from transformers import AutoTokenizer
 import faiss
 import numpy as np
 import os
+import pickle
 from groq import Groq
 
 app = Flask(__name__)
 
 # Initialize Groq API
-groq_api_key = ""  # Replace with your actual Groq API key
 client = Groq(api_key=groq_api_key)
 
 # Initialize models
@@ -19,83 +22,69 @@ tokenizer = AutoTokenizer.from_pretrained("distilbert-base-uncased")
 # Constants
 MAX_TOKENS = 30000
 CONTEXT_TOKEN_LIMIT = 4000
+EMBEDDING_FILE = "chapter_embeddings.pkl"
 
 # Data
+chunk_data = []  # Stores metadata for each chunk
+chunk_faiss_index = None  # FAISS index for chunk search
 threads = {}  # Stores chat history for each thread
-chapters = []  # Stores chapter metadata
-faiss_index = None  # FAISS index for similarity search
 
-# Load chapters from the 'doc' directory
-def load_chapters_from_doc():
-    global chapters, faiss_index
+# Load embeddings or preprocess documents into chunks
+def load_embeddings():
+    global chunk_data, chunk_faiss_index
     doc_dir = "doc"
-    if not os.path.exists(doc_dir):
-        print(f"Error: Directory '{doc_dir}' not found.")
-        exit(1)
+    chunk_embeddings = []
 
-    chapters = []
-    for file_name in os.listdir(doc_dir):
-        if file_name.endswith(".txt"):
-            file_path = os.path.join(doc_dir, file_name)
-            with open(file_path, "r", encoding="utf-8") as file:
-                content = file.read().strip()
-                chapters.append({"id": file_name, "content": content})
+    if os.path.exists(EMBEDDING_FILE):
+        # Load precomputed embeddings
+        with open(EMBEDDING_FILE, "rb") as f:
+            chunk_data, chunk_embeddings = pickle.load(f)
+        print(f"Loaded {len(chunk_data)} chunks.")
+    else:
+        # Generate embeddings if not available
+        if not os.path.exists(doc_dir):
+            raise FileNotFoundError(f"Directory '{doc_dir}' not found.")
 
-    # Create FAISS index
-    texts = [chapter["content"] for chapter in chapters]
-    embeddings = embedding_model.encode(texts)
-    dimension = embeddings.shape[1]
-    faiss_index = faiss.IndexFlatL2(dimension)
-    faiss_index.add(np.array(embeddings))
-    print(f"FAISS index built with {len(chapters)} documents.")
+        print("Processing documents...")
+        for file_name in os.listdir(doc_dir):
+            if file_name.endswith(".txt"):
+                file_path = os.path.join(doc_dir, file_name)
+                with open(file_path, "r", encoding="utf-8") as file:
+                    content = file.read().strip()
+                    for i, chunk_text in enumerate(content.split("\n\n")):
+                        chunk_data.append({"id": f"{file_name}_{i}", "chunk": chunk_text})
+                        chunk_embeddings.append(embedding_model.encode(chunk_text))
 
-# Retrieve relevant documents
-def retrieve_relevant_documents(query, k=2):
-    """Retrieve the top-k relevant chapters based on the query."""
+        with open(EMBEDDING_FILE, "wb") as f:
+            pickle.dump((chunk_data, chunk_embeddings), f)
+        print(f"Processed and saved {len(chunk_data)} chunks.")
+
+    # Build FAISS index
+    print("Building FAISS index...")
+    dimension = len(chunk_embeddings[0])
+    chunk_faiss_index = faiss.IndexFlatL2(dimension)
+    chunk_embeddings = np.vstack(chunk_embeddings)
+    chunk_embeddings = chunk_embeddings / np.linalg.norm(chunk_embeddings, axis=1, keepdims=True)  # Normalize
+    chunk_faiss_index.add(chunk_embeddings)
+    print("FAISS index built.")
+
+# Retrieve relevant chunks
+def retrieve_relevant_chunks(query, k=10):
+    if chunk_faiss_index is None or chunk_faiss_index.ntotal == 0:
+        print("FAISS index is empty.")
+        return []
+
     query_embedding = embedding_model.encode([query])
-    _, indices = faiss_index.search(np.array(query_embedding), k)
-    relevant_docs = [chapters[idx]["content"] for idx in indices[0]]
-    print(f"Top {k} relevant documents retrieved.")
-    return relevant_docs
+    query_embedding = query_embedding / np.linalg.norm(query_embedding)  # Normalize
+    k = min(k, chunk_faiss_index.ntotal)
+    _, indices = chunk_faiss_index.search(np.array(query_embedding), k)
+    return [chunk_data[i] for i in indices[0]]
 
-# Filter relevant portions from documents
-def filter_relevant_portions(query, documents, max_context_tokens=CONTEXT_TOKEN_LIMIT - 500):
-    """Filter the most relevant portions of the documents."""
-    chunks = []
-    for doc in documents:
-        chunks.extend(doc.split("\n"))  # Split each document into sentences or lines
+# Generate response using Groq API
+def generate_response(query, context):
+    if not context.strip():
+        return "No relevant information found to answer the query."
 
-    # Encode query and chunks for similarity scoring
-    query_embedding = embedding_model.encode([query])
-    chunk_embeddings = embedding_model.encode(chunks)
-
-    # Compute similarity scores
-    scores = np.dot(chunk_embeddings, query_embedding.T).squeeze()
-
-    # Sort chunks by relevance
-    ranked_chunks = sorted(zip(chunks, scores), key=lambda x: x[1], reverse=True)
-
-    # Select the most relevant chunks while staying within the token limit
-    filtered_context = []
-    current_token_count = 0
-    for chunk, score in ranked_chunks:
-        token_count = len(tokenizer(chunk)["input_ids"])
-        if current_token_count + token_count > max_context_tokens:
-            break
-        filtered_context.append(chunk)
-        current_token_count += token_count
-
-    print(f"Filtered context token count: {current_token_count}")
-    return "\n".join(filtered_context)
-
-# Generate response using Groq
-def generate_response_with_groq(query, context, chat_history, max_history=5):
-    # Use only the last 'max_history' turns for context
-    recent_history = chat_history[-(max_history * 2):]  # Each turn has both query and response
-    compact_history = "\n".join(recent_history)
-
-    # Combine context and recent history
-    full_context = f"{compact_history}\n{context}"
     prompt_template = f"""
     Below is the context of several topics and a question. Use the context to provide an answer to the question.
 
@@ -105,36 +94,31 @@ def generate_response_with_groq(query, context, chat_history, max_history=5):
     Question: {query}
     Answer:
     """
-    base_prompt = prompt_template.format("")
-    base_token_length = len(tokenizer(base_prompt)["input_ids"])
-    print(f"Base prompt token count: {base_token_length}")
-
-    # Truncate context if it exceeds token limit
-    context_lines = full_context.split("\n")
-    while True:
-        truncated_context = "\n".join(context_lines)
-        total_token_length = len(tokenizer(truncated_context)["input_ids"]) + base_token_length
-        if total_token_length <= CONTEXT_TOKEN_LIMIT or not context_lines:
-            break
-        context_lines.pop()
-
-    # Create the final prompt
+    truncated_context = context[:CONTEXT_TOKEN_LIMIT]
     prompt = prompt_template.format(truncated_context)
-    print(f"Final prompt token count: {len(tokenizer(prompt)['input_ids'])}")
-    print(f"Final prompt for debug:\n{prompt}")
-
-    # Call Groq API
+    print("prompt : ", prompt)
     response = client.chat.completions.create(
         messages=[{"role": "user", "content": prompt}],
         model="llama3-8b-8192"
     )
-
-    # Extract response content
     return response.choices[0].message.content.strip()
 
 @app.route("/")
 def index():
     return render_template("index.html")
+
+@app.route("/ask_question", methods=["POST"])
+def ask_question():
+    data = request.json
+    query = data.get("query")
+    if not query:
+        return jsonify({"error": "Query is required."}), 400
+
+    relevant_chunks = retrieve_relevant_chunks(query)
+    context = "\n".join([chunk["chunk"] for chunk in relevant_chunks])
+    response = generate_response(query, context)
+
+    return jsonify({"response": response}), 200
 
 @app.route("/create_thread", methods=["POST"])
 def create_thread():
@@ -154,32 +138,15 @@ def show_conversations(thread_id):
         return jsonify({"error": "Thread does not exist"}), 404
     return jsonify({"thread_id": thread_id, "chat_history": threads[thread_id]}), 200
 
-@app.route("/ask_question", methods=["POST"])
-def ask_question():
+@app.route("/add_message", methods=["POST"])
+def add_message():
     thread_id = request.json.get("thread_id")
-    query = request.json.get("query")
+    message = request.json.get("message")
     if thread_id not in threads:
         return jsonify({"error": "Thread does not exist"}), 404
-
-    # Retrieve chat history
-    chat_history = threads[thread_id]
-
-    # Retrieve relevant documents
-    relevant_docs = retrieve_relevant_documents(query)
-
-    # Filter relevant portions from the documents
-    context = filter_relevant_portions(query, relevant_docs)
-
-    # Generate response using Groq
-    response = generate_response_with_groq(query, context, chat_history)
-
-    # Update thread history
-    threads[thread_id].append(f"Query: {query}")
-    threads[thread_id].append(f"Response: {response}")
-
-    return jsonify({"response": response}), 200
+    threads[thread_id].append(message)
+    return jsonify({"message": "Message added successfully."}), 200
 
 if __name__ == "__main__":
-    # Load chapters
-    load_chapters_from_doc()
-    app.run(debug=True)
+    load_embeddings()  # Automatically preprocess if needed
+    app.run(debug=True, host="0.0.0.0", port=5003)

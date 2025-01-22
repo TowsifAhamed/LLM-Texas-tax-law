@@ -5,20 +5,25 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Texas Law Chat</title>
     <style>
-        body {
-            font-family: Arial, sans-serif;
+        * {
             margin: 0;
             padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: Arial, sans-serif;
             display: flex;
             height: 100vh;
+            padding: 10px; /* Add padding */
+            overflow: hidden; /* Prevent body scrollbars */
         }
         .sidebar {
-            width: 25%;
+            width: 25%; /* Fixed width for sidebar */
             background-color: #f1f1f1;
             border-right: 1px solid #ddd;
             padding: 10px;
-            box-sizing: border-box;
-            overflow-y: auto;
+            flex-shrink: 0; /* Prevent shrinking */
+            overflow-y: auto; /* Enable scrolling for sidebar */
         }
         .sidebar h2 {
             font-size: 1.2em;
@@ -40,19 +45,22 @@
             background-color: #eaeaea;
         }
         .chat-container {
-            flex-grow: 1;
+            flex-grow: 1; /* Allow the chat area to grow */
             display: flex;
             flex-direction: column;
+            margin-left: 10px; /* Space between sidebar and chat */
+            overflow: hidden;
         }
         .chat-header {
             padding: 10px;
             border-bottom: 1px solid #ddd;
             background-color: #f9f9f9;
+            flex-shrink: 0; /* Prevent shrinking */
         }
         .chat-content {
             flex-grow: 1;
             padding: 10px;
-            overflow-y: auto;
+            overflow-y: auto; /* Enable scrolling for chat content */
             background-color: #fff;
         }
         .chat-content .message {
@@ -80,6 +88,7 @@
             border-top: 1px solid #ddd;
             display: flex;
             gap: 10px;
+            flex-shrink: 0; /* Prevent shrinking */
         }
         .chat-input textarea {
             flex-grow: 1;
@@ -146,8 +155,7 @@
             const threadList = document.getElementById('threadList');
             threadList.innerHTML = ""; // Clear current list
 
-            // Fetch threads from the server
-            const response = await fetch('/show_all_threads'); // Add an endpoint to list all threads
+            const response = await fetch('/show_all_threads');
             const result = await response.json();
 
             if (result.error) {
@@ -170,7 +178,7 @@
             const result = await response.json();
 
             const chatContent = document.getElementById('chatContent');
-            chatContent.innerHTML = ""; // Clear existing messages
+            chatContent.innerHTML = "";
 
             if (result.error) {
                 alert(result.error);
@@ -214,11 +222,10 @@
                 chatContent.appendChild(botMessage);
 
                 document.getElementById('query').value = "";
-                chatContent.scrollTop = chatContent.scrollHeight; // Scroll to the bottom
+                chatContent.scrollTop = chatContent.scrollHeight;
             }
         }
 
-        // Load threads on page load
         window.onload = loadThreads;
     </script>
 </body>
